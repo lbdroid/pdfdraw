@@ -27,7 +27,7 @@ use \Firebase\JWT\JWT;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataDownloadResponse;
 use OCP\AppFramework\Http\DataResponse;
-use OCP\AppFramework\OCSController;
+use OCP\AppFramework\Controller;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\Files\File;
 use OCP\Files\IRootFolder;
@@ -35,7 +35,7 @@ use OCP\IConfig;
 use OCP\IDBConnection;
 use OCP\IRequest;
 
-class ApiController extends OCSController {
+class ApiController extends Controller {
 
 	/** @var IDBConnection */
 	private $db;
@@ -209,6 +209,63 @@ class ApiController extends OCSController {
 		return new DataResponse([]);
 	}
 
+        /**
+         * Download file by id.
+         *
+         * @PublicPage
+         * @NoCSRFRequired
+         *
+	 * @param string $fileId
+         * @return DataResponse
+         */
+	public function getFilePath(string $fileId) {
+
+                $decoded = $this->decodeToken($fileId);
+                if (empty($decoded)) {
+                        return new DataResponse([], Http::STATUS_UNAUTHORIZED);
+                }
+
+                $query = $this->db->getQueryBuilder();
+                $query->select('path')
+                        ->from('filecache')
+                        ->where($query->expr()->eq('fileid', $query->createNamedParameter($fileId)));
+                $result = $query->execute();
+                $path = null;
+                while ($row = $result->fetch()) {
+                        $path = $row['path'];
+                        break;
+                }
+                if (empty($path)) {
+                        return new DataResponse([], Http::STATUS_NOT_FOUND);
+		}
+
+		if (strpos($path, "files") === 0){
+			// This is a home owned file, the real path starts after "files".
+			$path = substr($path, 6);
+		} else if (strpos($path, "__groupfolders") === 0){
+			// This is a group folder, we need to calculate the real path
+			// from __groupfolders/#/Real Path/...
+			$groupid = explode("/", $path)[1];
+			$query = $this->db->getQueryBuilder();
+			$query->select('mount_point')
+				->from('group_folders')
+				->where($query->expr()->eq('folder_id', $query->createNamedParameter($groupid)));
+			$result = $query->execute();
+			while ($row = $result->fetch()){
+				$mountpoint = $row['mount_point'];
+				break;
+			}
+			if (empty($mountpoint)){
+				return new DataResponse([], Http::STATUS_NOT_FOUND);
+			}
+			$path = $mountpoint . substr($path, strpos($path, "/", strpos($path, "/") + 1));
+		}
+
+
+		return new DataDownloadResponse($path, "blob", "text/plain");
+//		return new DataResponse(["path" => $path], Http::STATUS_OK);
+	}
+
 	/**
 	 * Download file by id.
 	 *
@@ -248,12 +305,22 @@ class ApiController extends OCSController {
 			$homeId = $row['id'];
 			break;
 		}
-		if (empty($homeId) || strpos($homeId, 'home::') !== 0) {
-			return new DataResponse([], Http::STATUS_NOT_FOUND);
-		}
 
-		$ownerId = substr($homeId, 6);
+		// This is stupidly limited to user home directories.
+                $ownerId = "testuser";
+                if (empty($homeId) || strpos($homeId, 'home::') !== 0) {
+                        //return new DataResponse([], Http::STATUS_NOT_FOUND);
+                } else {
+                        $ownerId = substr($homeId, 6);
+                }
 		$files = $this->root->getUserFolder($ownerId)->getById($fileId);
+
+//		if (empty($homeId) || strpos($homeId, 'home::') !== 0) {
+//			return new DataResponse([], Http::STATUS_NOT_FOUND);
+//		}
+//		$ownerId = substr($homeId, 6);
+//		$files = $this->root->getUserFolder($ownerId)->getById($fileId);
+
 		if (empty($files)) {
 			return new DataResponse([], Http::STATUS_NOT_FOUND);
 		}

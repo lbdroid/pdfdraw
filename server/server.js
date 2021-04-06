@@ -393,7 +393,7 @@ Room.prototype.userMayModify = function(socket) {
 
 Room.prototype.downloadFile = function(token) {
   return new Promise(function(resolve, reject) {
-    var u = parse_url(this.base_url + '/apps/pdfdraw/download/' + this.id);
+    var u = parse_url(this.base_url + '/index.php/apps/pdfdraw/download/' + this.id);
     var options = {
       "hostname": u.hostname,
       "port": u.port,
@@ -406,7 +406,9 @@ Room.prototype.downloadFile = function(token) {
 
     var req = https.request(options, function(response) {
       var data = [];
+      console.log('response headers', response.headers);
       response.on('data', function(chunk) {
+        console.log('response body ', chunk);
         data.push(chunk);
       });
 
@@ -422,7 +424,6 @@ Room.prototype.downloadFile = function(token) {
         resolve(Buffer.concat(data));
       });
     });
-
     req.on("error", function(error) {
       reject({
         "error": error
@@ -431,6 +432,100 @@ Room.prototype.downloadFile = function(token) {
     req.end();
   }.bind(this));
 };
+
+Room.prototype.getFilePath = function(token) {
+  return new Promise(function(resolve, reject) {
+/// START OF ACTUAL FUNCTION
+    var u = parse_url(this.base_url + '/index.php/apps/pdfdraw/filepath/' + this.id);
+    var options = {
+      "hostname": u.hostname,
+      "port": u.port,
+      "method": "GET",
+      "path": u.pathname,
+      "headers": {
+        "Authorization": "Bearer " + token,
+      }
+    };
+
+    var req = https.request(options, function(response) {
+      var data = [];
+      console.log('response headers', response.headers);
+
+      response.on('data', function(chunk) {
+        data.push(chunk);
+      });
+
+      response.on('end', function() {
+        if (response.statusCode !== 200) {
+          return reject({
+            "code": response.statusCode,
+            "data": data,
+            "headers": response.headers
+          });
+        }
+	console.log('response body ', Buffer.concat(data));
+        resolve(Buffer.concat(data));
+      });
+    });
+    req.on("error", function(error) {
+      reject({
+        "error": error
+      });
+    });
+//    req.write(savedata);
+    req.end();
+/// END OF ACTUAL FUNCTION
+  }.bind(this));
+};
+
+Room.prototype.saveFile = function(path, cookie, postdata) {
+  return new Promise(function(resolve, reject) {
+/// START OF ACTUAL FUNCTION
+    var u = parse_url(path);
+    var options = {
+      "hostname": u.hostname,
+      "port": u.port,
+      "method": "PUT",
+      "path": u.pathname,
+      "headers": {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (Android) Nextcloud-android",
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Length": postdata.length,
+      }
+    };
+
+    var req = https.request(options, function(response) {
+      var data = [];
+      console.log('response headers', response.headers);
+
+      response.on('data', function(chunk) {
+        data.push(chunk);
+      });
+
+      response.on('end', function() {
+        if (response.statusCode !== 204) {
+          return reject({
+            "code": response.statusCode,
+            "data": data,
+            "headers": response.headers
+          });
+        }
+        console.log('response body ', Buffer.concat(data));
+        resolve(Buffer.concat(data));
+      });
+    });
+    req.on("error", function(error) {
+      reject({
+        "error": error
+      });
+    });
+    req.write(postdata);
+    req.end();
+/// END OF ACTUAL FUNCTION
+  }.bind(this));
+};
+
 
 var rooms = {};
 
@@ -693,6 +788,8 @@ function getDownloadFilename(filename, now) {
 }
 
 var server = http.createServer(function(request, response) {
+  var cookie = request.headers['cookie'];
+  console.log("request cookie ", request.headers['cookie']);
   if (request.method === "OPTIONS") {
     // Pre-flight request
     response.writeHead(200, {
@@ -824,9 +921,39 @@ var server = http.createServer(function(request, response) {
         return;
       }
 
+// This is where to send the modified file to nextcloud for save-in-place.
+      var pathgetter = room.getFilePath(token);
+      var uploadPath = "";
+      Promise.all([pathgetter]).then(function(results){
+	      console.log("getFilePath has returned: ", results[0].toString());
+	      uploadPath = room.base_url + "/remote.php/webdav/" + results[0].toString();
+	      console.log("calculated upload path: ", uploadPath);
+
+	      console.log("About to run uploader");
+	      var uploader = room.saveFile(uploadPath, cookie, merged);
+	      Promise.all([uploader]).then(function(results){
+	              console.log("saveFile has returned.");
+	      }).catch(function(error){
+	              console.log("Running catch block 2");
+	              reject(error);
+	      });
+      }).catch(function(error){
+	      console.log("Running catch block 1");
+	      reject(error);
+      });
+
       var now = new Date();
       var filename = getDownloadFilename(decoded.filename || room_id, now);
-      response.writeHead(200, {
+        response.writeHead(401, {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST",
+          "Access-Control-Allow-Headers": "Content-Type, Content-Disposition",
+          "Access-Control-Expose-Headers": "Content-Disposition",
+          "Content-Type": "text/plain"
+        });
+        response.end('Unauthorized');
+
+/*      response.writeHead(200, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST",
         "Access-Control-Allow-Headers": "Content-Type, Content-Disposition",
@@ -835,7 +962,7 @@ var server = http.createServer(function(request, response) {
         "Content-Disposition": "attachment; filename=\"" + filename + "\"",
         "Content-Length": merged.length
       });
-      response.end(merged);
+      response.end(merged);*/
     })
     .catch(function(error) {
       deleteFolderRecursive(tempdir);
@@ -859,6 +986,8 @@ io.set('origins', '*:*');
 
 io.on('connection', function(socket) {
   var query = socket.handshake.query;
+  var cookie = socket.handshake.headers['cookie'];
+  console.log('connection cookie ', socket.handshake.headers['cookie']);
   console.log('a user connected', query);
 
   var token = query.token;

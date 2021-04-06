@@ -50,6 +50,11 @@ return [
 			'url' => '/download/{fileId}',
 			'verb' => 'GET',
 		],
+		[
+			'name' => 'api#getFilePath',
+			'url' => '/filepath/{fileId}',
+			'verb' => 'GET',
+		],
 	],
 	'ocs' => [
 		[
